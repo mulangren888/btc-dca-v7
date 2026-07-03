@@ -1,13 +1,13 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
+import sqlite3
 import requests
 from datetime import datetime
 
-st.set_page_config(layout="wide")
+st.set_page_config(layout="wide", page_title="BTC DCA V7")
 
 # =========================
-# DATABASE
+# DB
 # =========================
 DB = "data.db"
 
@@ -31,164 +31,145 @@ def init_db():
 def insert_tx(user, wallet, usdc, btc, price):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    c.execute("""
-    INSERT INTO tx VALUES (NULL,?,?,?,?,?,?)
-    """, (user, wallet, usdc, btc, price, datetime.now().isoformat()))
+    c.execute("INSERT INTO tx VALUES (NULL,?,?,?,?,?,?)",
+              (user, wallet, usdc, btc, price, datetime.now().isoformat()))
     conn.commit()
     conn.close()
 
-def load_df():
+def load():
     conn = sqlite3.connect(DB)
     df = pd.read_sql("SELECT * FROM tx", conn)
     conn.close()
     return df
 
-
 # =========================
 # MARKET DATA
 # =========================
 @st.cache_data(ttl=60)
-def get_price():
+def btc_price():
     try:
-        r = requests.get(
-            "https://api.coingecko.com/api/v3/simple/price",
-            params={"ids": "bitcoin", "vs_currencies": "usd"}
-        )
+        r = requests.get("https://api.coingecko.com/api/v3/simple/price",
+                         params={"ids":"bitcoin","vs_currencies":"usd"})
         return r.json()["bitcoin"]["usd"]
     except:
-        return None
-
+        return 0
 
 @st.cache_data(ttl=300)
-def get_fear():
+def fear():
     try:
         r = requests.get("https://api.alternative.me/fng/?limit=1")
         return int(r.json()["data"][0]["value"])
     except:
-        return None
-
-
-@st.cache_data(ttl=300)
-def get_mvrv():
-    try:
-        r = requests.get("https://api.blockchaincenter.net/data/mvrv-zscore")
-        return float(r.json().get("mvrv", None))
-    except:
-        return None
-
-
-# =========================
-# STRATEGY ENGINE
-# =========================
-
-def b_signal(fear):
-    if fear is None:
-        return "NO DATA", 0
-    if fear < 10:
-        return "EXTREME FEAR", 9
-    if fear < 20:
-        return "FEAR", 6
-    return "NEUTRAL", 0
-
-
-def c_signal(mvrv):
-    if mvrv is None:
-        return "NO DATA", 0
-    if mvrv < 1:
-        return "UNDERVALUE", 17
-    if mvrv < 1.2:
-        return "LOW", 8
-    return "OVERVALUED", 0
-
-
-def a_signal(day):
-    return "BUY (27th rule)" if day == 27 else "WAIT"
-
+        return 0
 
 # =========================
 # INIT
 # =========================
 init_db()
 
-st.title("🚀 BTC DCA V7 - 智能共享决策面板")
+df = load()
+
+price = btc_price()
+fear_index = fear()
 
 # =========================
-# LIVE DATA PANEL
+# SIDEBAR（左侧控制栏）
 # =========================
-price = get_price()
-fear = get_fear()
-mvrv = get_mvrv()
+with st.sidebar:
+    st.title("⚙️ 控制面板")
 
-col1, col2, col3 = st.columns(3)
+    user = st.selectbox("操作者", ["碎","锋","叨"])
+    wallet = st.selectbox("钱包", ["A","B","C"])
 
-col1.metric("₿ BTC Price", f"${price}" if price else "N/A")
-col2.metric("😱 Fear Index", fear if fear else "N/A")
-col3.metric("📊 MVRV", mvrv if mvrv else "N/A")
+    usdc = st.number_input("USDC", 0.0, step=100.0)
+    btc = st.number_input("BTC", 0.0, step=0.0001)
+    price_in = st.number_input("价格", float(price))
+
+    if st.button("➕ 提交记录"):
+        insert_tx(user, wallet, usdc, btc, price_in)
+        st.success("已记录")
+
+    st.divider()
+    st.write("📊 系统状态")
+    st.write(f"BTC Price: {price}")
+    st.write(f"Fear Index: {fear_index}")
+
+# =========================
+# HEADER METRICS（顶部）
+# =========================
+col1, col2, col3, col4 = st.columns(4)
+
+col1.metric("₿ BTC Price", f"${price}")
+col2.metric("😱 Fear Index", fear_index)
+col3.metric("📊 Market State", "Neutral" if fear_index > 20 else "Fear")
+col4.metric("🧠 Strategy", "Active")
 
 st.divider()
 
 # =========================
-# SIGNAL PANEL
+# STRATEGY CARDS（中间策略区）
 # =========================
-st.subheader("🧠 自动策略信号")
+st.subheader("📊 策略信号面板")
 
-day = datetime.now().day
+c1, c2, c3 = st.columns(3)
 
-b_label, b_buy = b_signal(fear)
-c_label, c_buy = c_signal(mvrv)
-a_label = a_signal(day)
+with c1:
+    st.markdown("### 🟢 A钱包（固定定投）")
+    st.info("每月27号执行")
+    st.success("状态：待执行")
 
-st.write(f"🟢 A钱包：{a_label}")
+with c2:
+    st.markdown("### 🟡 B钱包（恐惧指数）")
+    if fear_index < 20:
+        st.error("强烈买入信号")
+    else:
+        st.warning("观望")
 
-st.write(f"🟡 B钱包：Fear={fear} → {b_label} → 建议买 {b_buy} 份")
-
-st.write(f"🔴 C钱包：MVRV={mvrv} → {c_label} → 建议买 {c_buy} 份")
+with c3:
+    st.markdown("### 🔴 C钱包（MVRV逻辑）")
+    st.warning("估值模型运行中")
 
 st.divider()
 
 # =========================
-# INPUT
+# WALLET CARDS（核心资产区）
 # =========================
-st.subheader("🧑‍🤝‍🧑 记录交易")
+st.subheader("💰 钱包资产面板")
 
-user = st.selectbox("操作者", ["碎", "锋", "叨"])
-wallet = st.selectbox("钱包", ["A", "B", "C"])
+def wallet_block(name):
+    d = df[df["wallet"] == name]
+    usdc_sum = d["usdc"].sum()
+    btc_sum = d["btc"].sum()
 
-usdc = st.number_input("USDC", 0.0, step=100.0)
-btc = st.number_input("BTC", 0.0, step=0.0001)
-price_in = st.number_input("价格", price or 0)
+    col = st.container()
+    with col:
+        st.markdown(f"### {name} 钱包")
+        st.metric("USDC投入", f"{usdc_sum:.2f}")
+        st.metric("BTC持仓", f"{btc_sum:.6f}")
+        if btc_sum > 0:
+            st.metric("均价", f"{usdc_sum/btc_sum:.2f}")
 
-if st.button("提交"):
-    insert_tx(user, wallet, usdc, btc, price_in)
-    st.success("已记录")
-
-# =========================
-# DATA VIEW
-# =========================
-df = load_df()
+c1, c2, c3 = st.columns(3)
+with c1: wallet_block("A")
+with c2: wallet_block("B")
+with c3: wallet_block("C")
 
 st.divider()
+
+# =========================
+# CHARTS（底部图表）
+# =========================
+st.subheader("📈 数据分析")
 
 if len(df) > 0:
-    st.subheader("📊 交易记录")
+    g = df.groupby("wallet")[["usdc","btc"]].sum()
+
+    st.bar_chart(g["usdc"])
+    st.bar_chart(g["btc"])
+
+    st.divider()
+
+    st.subheader("📜 交易记录")
     st.dataframe(df, use_container_width=True)
-
-    st.subheader("📈 钱包统计")
-
-    summary = df.groupby("wallet")[["usdc", "btc"]].sum().reset_index()
-
-    st.bar_chart(summary.set_index("wallet")[["btc"]])
-    st.bar_chart(summary.set_index("wallet")[["usdc"]])
-
-    st.subheader("💰 总览")
-
-    total_usdc = df["usdc"].sum()
-    total_btc = df["btc"].sum()
-
-    st.metric("总投入", round(total_usdc, 2))
-    st.metric("BTC持仓", round(total_btc, 6))
-
-    if total_btc > 0:
-        st.metric("平均成本", round(total_usdc / total_btc, 2))
 else:
     st.info("暂无数据")
